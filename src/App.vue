@@ -3,9 +3,14 @@
     <header class="header">
       <h1>🚀 Team Standup Wall</h1>
       <p>Your daily hub for team coordination and updates</p>
-      <button @click="currentView = 'team-management'" class="btn btn-team-management">
-        👥 Manage Team
-      </button>
+      <div class="header-buttons">
+        <button @click="currentView = 'team-management'" class="btn btn-team-management">
+          👥 Manage Team
+        </button>
+        <button @click="currentView = 'retrospectives'" class="btn btn-retrospectives">
+          🔄 Retrospectives
+        </button>
+      </div>
     </header>
 
     <div class="dashboard-grid">
@@ -77,7 +82,7 @@
 
       <!-- Meeting Host Spinner - Smaller -->
       <div class="card spinner-card">
-        <h2>🎲 Host</h2>
+        <h2>🎲 Standup Host</h2>
         <div class="spinner-section-compact">
           <button @click="spinForHost" class="btn btn-sm" :disabled="teamMembers.length === 0">
             {{ spinning ? 'Spinning...' : 'Spin' }}
@@ -85,6 +90,20 @@
           <div v-if="selectedHost" class="spinner-result-compact">
             <strong>{{ selectedHost }}</strong>
             <button @click="clearHost" class="btn btn-danger btn-xs">×</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Retro Host Spinner - Smaller -->
+      <div class="card spinner-card">
+        <h2>🔄 Retro Host</h2>
+        <div class="spinner-section-compact">
+          <button @click="spinForRetroHost" class="btn btn-sm" :disabled="teamMembers.length === 0">
+            {{ retroSpinning ? 'Spinning...' : 'Spin' }}
+          </button>
+          <div v-if="selectedRetroHost" class="spinner-result-compact">
+            <strong>{{ selectedRetroHost }}</strong>
+            <button @click="clearRetroHost" class="btn btn-danger btn-xs">×</button>
           </div>
         </div>
       </div>
@@ -263,17 +282,27 @@
     @remove-member="removeMember"
     @edit-member="editMember"
   />
+
+  <!-- Retrospectives Page -->
+  <Retrospectives 
+    v-else-if="currentView === 'retrospectives'"
+    :team-members="teamMembers"
+    :selected-retro-host="selectedRetroHost"
+    @back="currentView = 'dashboard'"
+  />
 </template>
 
 <script>
 import { ref, computed, onMounted } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
 import TeamManagement from './components/TeamManagement.vue'
+import Retrospectives from './components/Retrospectives.vue'
 
 export default {
   name: 'App',
   components: {
-    TeamManagement
+    TeamManagement,
+    Retrospectives
   },
   setup() {
     // Reactive data with localStorage persistence
@@ -295,6 +324,8 @@ export default {
     // Spinner state with localStorage persistence
     const spinning = ref(false)
     const selectedHost = useLocalStorage('selectedHost', '')
+    const retroSpinning = ref(false)
+    const selectedRetroHost = useLocalStorage('selectedRetroHost', '')
     
     // Current date for calendar
     const currentDate = ref(new Date())
@@ -428,6 +459,30 @@ export default {
 
     const clearHost = () => {
       selectedHost.value = ''
+    }
+
+    // Retro spinner functionality
+    const spinForRetroHost = () => {
+      if (teamMembers.value.length === 0) return
+      
+      retroSpinning.value = true
+      let counter = 0
+      const maxSpins = 20
+      
+      const spinInterval = setInterval(() => {
+        const randomIndex = Math.floor(Math.random() * teamMembers.value.length)
+        selectedRetroHost.value = teamMembers.value[randomIndex].name
+        counter++
+        
+        if (counter >= maxSpins) {
+          clearInterval(spinInterval)
+          retroSpinning.value = false
+        }
+      }, 100)
+    }
+
+    const clearRetroHost = () => {
+      selectedRetroHost.value = ''
     }
 
     // Support rota management - Engineers only
@@ -815,6 +870,8 @@ export default {
       newSupportMember,
       spinning,
       selectedHost,
+      retroSpinning,
+      selectedRetroHost,
       dayNames,
       holidaysCache,
       holidaysLoading,
@@ -838,6 +895,8 @@ export default {
       openLink,
       spinForHost,
       clearHost,
+      spinForRetroHost,
+      clearRetroHost,
       addToSupport,
       removeFromSupport,
       addEvent,
