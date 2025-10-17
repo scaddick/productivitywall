@@ -149,11 +149,12 @@ export function useFirestoreDocument(collectionName, documentId = 'default') {
 
   const update = async (updates) => {
     try {
-      await setDoc(docRef, {
+      const docData = {
         ...data.value,
         ...updates,
         updatedAt: serverTimestamp()
-      }, { merge: true })
+      }
+      await setDoc(docRef, docData, { merge: true })
     } catch (err) {
       console.error('Error updating document:', err)
       error.value = err.message

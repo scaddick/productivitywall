@@ -140,7 +140,7 @@
           >
           
           <!-- Loading indicator -->
-          <div v-if="ticketsStore.loading" class="board-loading">
+          <div v-if="ticketsStore.loading && tickets.length === 0" class="board-loading">
             Loading tickets...
           </div>
           

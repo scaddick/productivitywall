@@ -84,23 +84,25 @@
       <div class="card spinner-card">
         <h2>🎲 Standup Host</h2>
         <div class="spinner-section-compact">
-          <button @click="spinForHost" class="btn btn-sm" :disabled="teamMembers.length === 0">
+          <button @click="spinForHost" class="btn btn-sm" :disabled="teamMembers.length === 0 || isAppSettingsLoading">
             {{ spinning ? 'Spinning...' : 'Spin' }}
           </button>
-          <div v-if="selectedHost" class="spinner-result-compact">
-            <strong>{{ selectedHost }}</strong>
-            <button @click="clearHost" class="btn btn-danger btn-xs">×</button>
+          <div v-if="selectedHost || spinning" class="spinner-result-compact">
+            <strong>{{ spinning ? spinnerHostDisplay : selectedHost }}</strong>
+            <button v-if="!spinning" @click="clearHost" class="btn btn-danger btn-xs">×</button>
           </div>
+          <div v-if="appSettingsStore.loading" class="text-sm text-gray">Loading...</div>
         </div>
         <h2>🔄 Retro Host</h2>
         <div class="spinner-section-compact">
-          <button @click="spinForRetroHost" class="btn btn-sm" :disabled="teamMembers.length === 0">
+          <button @click="spinForRetroHost" class="btn btn-sm" :disabled="teamMembers.length === 0 || isAppSettingsLoading">
             {{ retroSpinning ? 'Spinning...' : 'Spin' }}
           </button>
-          <div v-if="selectedRetroHost" class="spinner-result-compact">
-            <strong>{{ selectedRetroHost }}</strong>
-            <button @click="clearRetroHost" class="btn btn-danger btn-xs">×</button>
+          <div v-if="selectedRetroHost || retroSpinning" class="spinner-result-compact">
+            <strong>{{ retroSpinning ? spinnerRetroHostDisplay : selectedRetroHost }}</strong>
+            <button v-if="!retroSpinning" @click="clearRetroHost" class="btn btn-danger btn-xs">×</button>
           </div>
+          <div v-if="appSettingsStore.loading" class="text-sm text-gray">Loading...</div>
         </div>
       </div>      
     </div>
@@ -325,11 +327,35 @@ export default {
     const newEvent = ref({ title: '', type: 'full', color: 'teal', startDate: '', endDate: '', assignees: [] })
     const newSupportMember = ref('')
     
-    // Spinner state with localStorage persistence
+    // Firebase document for app settings (including spinner values)
+    const appSettingsStore = useFirestoreDocument('appSettings', 'current')
+    const appSettings = appSettingsStore.data
+    
+    // Spinner state (local spinning animation, but selected values from Firebase)
     const spinning = ref(false)
-    const selectedHost = useLocalStorage('selectedHost', '')
     const retroSpinning = ref(false)
-    const selectedRetroHost = useLocalStorage('selectedRetroHost', '')
+    
+    // Computed for loading state
+    const isAppSettingsLoading = computed(() => appSettingsStore.loading.value)
+
+    // Computed values for selected hosts from Firebase
+    const selectedHost = computed({
+      get: () => appSettings.value.selectedHost || '',
+      set: (value) => {
+        appSettingsStore.update({ selectedHost: value }).catch(err => {
+          console.error('Error updating selectedHost:', err)
+        })
+      }
+    })
+    
+    const selectedRetroHost = computed({
+      get: () => appSettings.value.selectedRetroHost || '',
+      set: (value) => {
+        appSettingsStore.update({ selectedRetroHost: value }).catch(err => {
+          console.error('Error updating selectedRetroHost:', err)
+        })
+      }
+    })
     
     // Current date for calendar
     const currentDate = ref(new Date())
@@ -461,6 +487,10 @@ export default {
       window.open(fullUrl, '_blank', 'noopener,noreferrer')
     }
 
+    // Local spinner display values (for animation)
+    const spinnerHostDisplay = ref('')
+    const spinnerRetroHostDisplay = ref('')
+
     // Spinner functionality
     const spinForHost = () => {
       if (teamMembers.value.length === 0) return
@@ -468,21 +498,26 @@ export default {
       spinning.value = true
       let counter = 0
       const maxSpins = 20
+      let finalSelection = ''
       
       const spinInterval = setInterval(() => {
         const randomIndex = Math.floor(Math.random() * teamMembers.value.length)
-        selectedHost.value = teamMembers.value[randomIndex].name
+        finalSelection = teamMembers.value[randomIndex].name
+        spinnerHostDisplay.value = finalSelection
         counter++
         
         if (counter >= maxSpins) {
           clearInterval(spinInterval)
           spinning.value = false
+          // Set final selection to Firebase
+          selectedHost.value = finalSelection
         }
       }, 100)
     }
 
     const clearHost = () => {
       selectedHost.value = ''
+      spinnerHostDisplay.value = ''
     }
 
     // Retro spinner functionality
@@ -492,21 +527,26 @@ export default {
       retroSpinning.value = true
       let counter = 0
       const maxSpins = 20
+      let finalSelection = ''
       
       const spinInterval = setInterval(() => {
         const randomIndex = Math.floor(Math.random() * teamMembers.value.length)
-        selectedRetroHost.value = teamMembers.value[randomIndex].name
+        finalSelection = teamMembers.value[randomIndex].name
+        spinnerRetroHostDisplay.value = finalSelection
         counter++
         
         if (counter >= maxSpins) {
           clearInterval(spinInterval)
           retroSpinning.value = false
+          // Set final selection to Firebase
+          selectedRetroHost.value = finalSelection
         }
       }, 100)
     }
 
     const clearRetroHost = () => {
       selectedRetroHost.value = ''
+      spinnerRetroHostDisplay.value = ''
     }
 
     // Support rota management - Engineers only
@@ -870,12 +910,24 @@ export default {
 
     // Load holidays for current year on component mount
     onMounted(async () => {
+      console.log('Starting Firebase listeners...')
+      
       // Start Firebase listeners
       teamMembersStore.startListening()
       standupNotesStore.startListening('timestamp')
       usefulLinksStore.startListening('timestamp')
       calendarEventsStore.startListening('timestamp')
       supportRotaStore.startListening('timestamp')
+      
+      console.log('Starting appSettings listener...')
+      appSettingsStore.startListening()
+      
+      // Debug appSettings loading
+      setTimeout(() => {
+        console.log('appSettingsStore loading:', appSettingsStore.loading.value)
+        console.log('appSettingsStore error:', appSettingsStore.error.value)
+        console.log('appSettingsStore data:', appSettingsStore.data.value)
+      }, 2000)
       
       const currentYear = new Date().getFullYear()
       await fetchHolidaysForYear(currentYear)
@@ -897,6 +949,9 @@ export default {
       // Loading states
       teamMembersLoading: teamMembersStore.loading,
       standupNotesLoading: standupNotesStore.loading,
+      // App settings store
+      appSettingsStore,
+      isAppSettingsLoading,
       newNote,
       newLink,
       newEvent,
@@ -905,6 +960,8 @@ export default {
       selectedHost,
       retroSpinning,
       selectedRetroHost,
+      spinnerHostDisplay,
+      spinnerRetroHostDisplay,
       dayNames,
       holidaysCache,
       holidaysLoading,
