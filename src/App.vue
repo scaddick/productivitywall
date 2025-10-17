@@ -92,10 +92,6 @@
             <button @click="clearHost" class="btn btn-danger btn-xs">×</button>
           </div>
         </div>
-      </div>
-
-      <!-- Retro Host Spinner - Smaller -->
-      <div class="card spinner-card">
         <h2>🔄 Retro Host</h2>
         <div class="spinner-section-compact">
           <button @click="spinForRetroHost" class="btn btn-sm" :disabled="teamMembers.length === 0">
@@ -106,7 +102,7 @@
             <button @click="clearRetroHost" class="btn btn-danger btn-xs">×</button>
           </div>
         </div>
-      </div>
+      </div>      
     </div>
 
     <!-- Support Rota -->
@@ -295,6 +291,7 @@
 <script>
 import { ref, computed, onMounted } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
+import { useFirestore, useFirestoreDocument } from './composables/useFirestore.js'
 import TeamManagement from './components/TeamManagement.vue'
 import Retrospectives from './components/Retrospectives.vue'
 
@@ -305,12 +302,19 @@ export default {
     Retrospectives
   },
   setup() {
-    // Reactive data with localStorage persistence
-    const teamMembers = useLocalStorage('teamMembers', [])
-    const standupNotes = useLocalStorage('standupNotes', [])
-    const usefulLinks = useLocalStorage('usefulLinks', [])
-    const calendarEvents = useLocalStorage('calendarEvents', [])
-    const supportRota = useLocalStorage('supportRota', [])
+    // Firebase collections
+    const teamMembersStore = useFirestore('members')
+    const standupNotesStore = useFirestore('standupNotes')
+    const usefulLinksStore = useFirestore('usefulLinks')
+    const calendarEventsStore = useFirestore('calendarEvents')
+    const supportRotaStore = useFirestore('supportRota')
+    
+    // Reactive data from Firebase
+    const teamMembers = teamMembersStore.data
+    const standupNotes = standupNotesStore.data
+    const usefulLinks = usefulLinksStore.data
+    const calendarEvents = calendarEventsStore.data
+    const supportRota = supportRotaStore.data
     
     // View management
     const currentView = ref('dashboard')
@@ -344,64 +348,77 @@ export default {
     })
 
     // Team management
-    const addMember = (memberData) => {
-      teamMembers.value.push({
-        id: Date.now(),
-        name: memberData.name,
-        role: memberData.role
-      })
-    }
-
-    const removeMember = (id) => {
-      teamMembers.value = teamMembers.value.filter(member => member.id !== id)
-      // Remove from support rota if they were on it
-      supportRota.value = supportRota.value.filter(member => member.id !== id)
-    }
-
-    const editMember = (memberData) => {
-      const memberIndex = teamMembers.value.findIndex(member => member.id === memberData.id)
-      if (memberIndex !== -1) {
-        const oldMember = teamMembers.value[memberIndex]
-        teamMembers.value[memberIndex] = {
-          ...oldMember,
+    const addMember = async (memberData) => {
+      try {
+        await teamMembersStore.add({
           name: memberData.name,
           role: memberData.role
+        })
+      } catch (error) {
+        console.error('Error adding member:', error)
+      }
+    }
+
+    const removeMember = async (id) => {
+      try {
+        await teamMembersStore.remove(id)
+        // Remove from support rota if they were on it
+        const memberInSupport = supportRota.value.find(member => member.memberId === id)
+        if (memberInSupport) {
+          await supportRotaStore.remove(memberInSupport.id)
         }
+      } catch (error) {
+        console.error('Error removing member:', error)
+      }
+    }
+
+    const editMember = async (memberData) => {
+      try {
+        await teamMembersStore.update(memberData.id, {
+          name: memberData.name,
+          role: memberData.role
+        })
         
         // Update support rota if the member was on it and role changed
-        const supportIndex = supportRota.value.findIndex(member => member.id === memberData.id)
-        if (supportIndex !== -1) {
+        const memberInSupport = supportRota.value.find(member => member.memberId === memberData.id)
+        if (memberInSupport) {
           if (memberData.role !== 'Eng') {
             // Remove from support if no longer an engineer
-            supportRota.value = supportRota.value.filter(member => member.id !== memberData.id)
-            // Reorder remaining members and update week numbers
-            supportRota.value.forEach((member, index) => {
-              member.week = index + 1
-            })
+            await supportRotaStore.remove(memberInSupport.id)
           } else {
             // Update name in support rota
-            supportRota.value[supportIndex].name = memberData.name
+            await supportRotaStore.update(memberInSupport.id, {
+              name: memberData.name
+            })
           }
         }
+      } catch (error) {
+        console.error('Error editing member:', error)
       }
     }
 
     // Notes management
-    const addNote = () => {
+    const addNote = async () => {
       if (newNote.value.content.trim()) {
-        standupNotes.value.unshift({
-          id: Date.now(),
-          category: newNote.value.category,
-          content: newNote.value.content.trim(),
-          author: 'Team Member', // Could be enhanced with user auth
-          timestamp: new Date()
-        })
-        newNote.value.content = ''
+        try {
+          await standupNotesStore.add({
+            category: newNote.value.category,
+            content: newNote.value.content.trim(),
+            author: 'Team Member' // Could be enhanced with user auth
+          })
+          newNote.value.content = ''
+        } catch (error) {
+          console.error('Error adding note:', error)
+        }
       }
     }
 
-    const removeNote = (id) => {
-      standupNotes.value = standupNotes.value.filter(note => note.id !== id)
+    const removeNote = async (id) => {
+      try {
+        await standupNotesStore.remove(id)
+      } catch (error) {
+        console.error('Error removing note:', error)
+      }
     }
 
     const getCategoryLabel = (category) => {
@@ -415,20 +432,27 @@ export default {
     }
 
     // Links management
-    const addLink = () => {
+    const addLink = async () => {
       if (newLink.value.title.trim() && newLink.value.url.trim()) {
-        usefulLinks.value.push({
-          id: Date.now(),
-          title: newLink.value.title.trim(),
-          description: newLink.value.description.trim(),
-          url: newLink.value.url.trim()
-        })
-        newLink.value = { title: '', description: '', url: '' }
+        try {
+          await usefulLinksStore.add({
+            title: newLink.value.title.trim(),
+            description: newLink.value.description.trim(),
+            url: newLink.value.url.trim()
+          })
+          newLink.value = { title: '', description: '', url: '' }
+        } catch (error) {
+          console.error('Error adding link:', error)
+        }
       }
     }
 
-    const removeLink = (id) => {
-      usefulLinks.value = usefulLinks.value.filter(link => link.id !== id)
+    const removeLink = async (id) => {
+      try {
+        await usefulLinksStore.remove(id)
+      } catch (error) {
+        console.error('Error removing link:', error)
+      }
     }
 
     const openLink = (url) => {
@@ -493,63 +517,54 @@ export default {
       )
     })
 
-    const addToSupport = () => {
+    const addToSupport = async () => {
       if (newSupportMember.value) {
         const member = teamMembers.value.find(m => m.name === newSupportMember.value)
         if (member && member.role === 'Eng') {
-          // Implement proper staggered rotation:
-          // New member enters as Week 1
-          // Existing Week 1 moves to Week 2  
-          // Existing Week 2 is removed (completed 2 weeks)
-          
-          if (supportRota.value.length === 0) {
-            // First person - becomes Week 1
-            supportRota.value.push({
-              id: member.id,
-              name: member.name,
-              startDate: new Date(),
-              week: 1
-            })
-          } else if (supportRota.value.length === 1) {
-            // Second person - existing becomes Week 2, new becomes Week 1
-            supportRota.value[0].week = 2
-            supportRota.value.unshift({
-              id: member.id,
-              name: member.name,
-              startDate: new Date(),
-              week: 1
-            })
-          } else {
-            // Full rotation - remove Week 2, move Week 1 to Week 2, add new Week 1
-            supportRota.value = [
-              {
-                id: member.id,
-                name: member.name,
-                startDate: new Date(),
-                week: 1
-              },
-              {
-                ...supportRota.value[0],
-                week: 2
+          try {
+            // Remove existing Week 2 member if rotation is full
+            if (supportRota.value.length >= 2) {
+              const week2Member = supportRota.value.find(m => m.week === 2)
+              if (week2Member) {
+                await supportRotaStore.remove(week2Member.id)
               }
-            ]
+            }
+            
+            // Update existing Week 1 to Week 2
+            if (supportRota.value.length >= 1) {
+              const week1Member = supportRota.value.find(m => m.week === 1)
+              if (week1Member) {
+                await supportRotaStore.update(week1Member.id, { week: 2 })
+              }
+            }
+            
+            // Add new Week 1 member
+            await supportRotaStore.add({
+              memberId: member.id,
+              name: member.name,
+              startDate: new Date(),
+              week: 1
+            })
+            
+            newSupportMember.value = ''
+          } catch (error) {
+            console.error('Error adding to support:', error)
           }
-          
-          newSupportMember.value = ''
         }
       }
     }
 
-    const removeFromSupport = (id) => {
-      supportRota.value = supportRota.value.filter(member => member.id !== id)
-      // Reorder remaining members and update week numbers
-      supportRota.value.forEach((member, index) => {
-        member.week = index + 1
-      })
+    const removeFromSupport = async (id) => {
+      try {
+        await supportRotaStore.remove(id)
+        // Note: Week reordering will happen automatically through real-time updates
+      } catch (error) {
+        console.error('Error removing from support:', error)
+      }
     }
 
     // Calendar functionality
-    const addEvent = () => {
+    const addEvent = async () => {
       if (newEvent.value.title.trim() && newEvent.value.startDate) {
         const endDate = newEvent.value.endDate || newEvent.value.startDate
         
@@ -570,50 +585,51 @@ export default {
         const endDay = parseInt(endDateParts[2])
         
         // Generate events for each day in the range
-        const events = []
         const originalId = Date.now()
         
         let currentYear = startYear
         let currentMonth = startMonth
         let currentDay = startDay
         
-        while (true) {
-          // Format current date as YYYY-MM-DD
-          const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(currentDay).padStart(2, '0')}`
-          
-          events.push({
-            id: Date.now() + Math.random(), // Ensure unique IDs for multi-day events
-            title: newEvent.value.title.trim(),
-            type: newEvent.value.type,
-            color: newEvent.value.color,
-            assignees: [...newEvent.value.assignees],
-            date: dateStr,
-            isMultiDay: startDateStr !== endDateStr,
-            originalId: originalId // Link multi-day events together
-          })
-          
-          // Check if we've reached the end date
-          if (currentYear === endYear && currentMonth === endMonth && currentDay === endDay) {
-            break
-          }
-          
-          // Move to next day
-          currentDay++
-          
-          // Handle month/year rollover
-          const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
-          if (currentDay > daysInMonth) {
-            currentDay = 1
-            currentMonth++
-            if (currentMonth > 12) {
-              currentMonth = 1
-              currentYear++
+        try {
+          while (true) {
+            // Format current date as YYYY-MM-DD
+            const dateStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(currentDay).padStart(2, '0')}`
+            
+            await calendarEventsStore.add({
+              title: newEvent.value.title.trim(),
+              type: newEvent.value.type,
+              color: newEvent.value.color,
+              assignees: [...newEvent.value.assignees],
+              date: dateStr,
+              isMultiDay: startDateStr !== endDateStr,
+              originalId: originalId // Link multi-day events together
+            })
+            
+            // Check if we've reached the end date
+            if (currentYear === endYear && currentMonth === endMonth && currentDay === endDay) {
+              break
+            }
+            
+            // Move to next day
+            currentDay++
+            
+            // Handle month/year rollover
+            const daysInMonth = new Date(currentYear, currentMonth, 0).getDate()
+            if (currentDay > daysInMonth) {
+              currentDay = 1
+              currentMonth++
+              if (currentMonth > 12) {
+                currentMonth = 1
+                currentYear++
+              }
             }
           }
+          
+          newEvent.value = { title: '', type: 'full', color: 'teal', startDate: '', endDate: '', assignees: [] }
+        } catch (error) {
+          console.error('Error adding event:', error)
         }
-        
-        calendarEvents.value.push(...events)
-        newEvent.value = { title: '', type: 'full', color: 'teal', startDate: '', endDate: '', assignees: [] }
       }
     }
 
@@ -632,14 +648,21 @@ export default {
       return currentDate.value.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
     })
 
-    const removeEvent = (id) => {
-      const eventToRemove = calendarEvents.value.find(event => event.id === id)
-      if (eventToRemove && eventToRemove.isMultiDay) {
-        // Remove all events with the same originalId (multi-day event)
-        calendarEvents.value = calendarEvents.value.filter(event => event.originalId !== eventToRemove.originalId)
-      } else {
-        // Remove single event
-        calendarEvents.value = calendarEvents.value.filter(event => event.id !== id)
+    const removeEvent = async (id) => {
+      try {
+        const eventToRemove = calendarEvents.value.find(event => event.id === id)
+        if (eventToRemove && eventToRemove.isMultiDay) {
+          // Remove all events with the same originalId (multi-day event)
+          const eventsToRemove = calendarEvents.value.filter(event => event.originalId === eventToRemove.originalId)
+          for (const event of eventsToRemove) {
+            await calendarEventsStore.remove(event.id)
+          }
+        } else {
+          // Remove single event
+          await calendarEventsStore.remove(id)
+        }
+      } catch (error) {
+        console.error('Error removing event:', error)
       }
     }
 
@@ -847,6 +870,13 @@ export default {
 
     // Load holidays for current year on component mount
     onMounted(async () => {
+      // Start Firebase listeners
+      teamMembersStore.startListening()
+      standupNotesStore.startListening('timestamp')
+      usefulLinksStore.startListening('timestamp')
+      calendarEventsStore.startListening('timestamp')
+      supportRotaStore.startListening('timestamp')
+      
       const currentYear = new Date().getFullYear()
       await fetchHolidaysForYear(currentYear)
     })
@@ -864,6 +894,9 @@ export default {
       usefulLinks,
       calendarEvents,
       supportRota,
+      // Loading states
+      teamMembersLoading: teamMembersStore.loading,
+      standupNotesLoading: standupNotesStore.loading,
       newNote,
       newLink,
       newEvent,

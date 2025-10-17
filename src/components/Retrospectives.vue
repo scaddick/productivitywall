@@ -139,6 +139,11 @@
             class="board-background"
           >
           
+          <!-- Loading indicator -->
+          <div v-if="ticketsStore.loading" class="board-loading">
+            Loading tickets...
+          </div>
+          
           <!-- Tickets -->
           <div 
             v-for="ticket in tickets" 
@@ -154,6 +159,7 @@
                 placeholder="Add your note..."
                 class="ticket-textarea"
                 @click.stop
+                @blur="updateTicketContent(ticket)"
               ></textarea>
               <button @click="removeTicket(ticket.id)" class="ticket-remove">×</button>
             </div>
@@ -188,6 +194,7 @@
 <script>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
+import { useFirestore, useFirestoreDocument } from '../composables/useFirestore.js'
 
 export default {
   name: 'Retrospectives',
@@ -197,13 +204,35 @@ export default {
   },
   emits: ['back'],
   setup() {
-    // Persistent data
-    const teamMantra = useLocalStorage('teamMantra', '')
-    const tickets = useLocalStorage('retroTickets', [])
-    const actions = useLocalStorage('retroActions', [])
-    const backgroundImage = useLocalStorage('retroBackgroundImage', '')
-    const votes = useLocalStorage('retroVotes', {})
+    // Firebase collections for retrospectives
+    const ticketsStore = useFirestore('retroTickets')
+    const actionsStore = useFirestore('retroActions')
+    const votesStore = useFirestore('retroVotes')
+    const settingsStore = useFirestoreDocument('retroSettings', 'current')
+    
+    // Reactive data from Firebase
+    const tickets = ticketsStore.data
+    const actions = actionsStore.data
+    const allVotes = votesStore.data
+    const settings = settingsStore.data
+    
+    // Local storage for user-specific data
     const userVotes = useLocalStorage('userRetroVotes', {})
+    
+    // Computed values from settings
+    const teamMantra = computed({
+      get: () => settings.value.teamMantra || '',
+      set: (value) => {
+        settingsStore.update({ teamMantra: value })
+      }
+    })
+    
+    const backgroundImage = computed({
+      get: () => settings.value.backgroundImage || '',
+      set: (value) => {
+        settingsStore.update({ backgroundImage: value })
+      }
+    })
     
     // Timer state
     const timerMinutes = ref(5)
@@ -233,9 +262,9 @@ export default {
       const categories = ['safety', 'happiness', 'satisfaction']
       
       categories.forEach(category => {
-        const categoryVotes = votes.value[category] || []
+        const categoryVotes = allVotes.value.filter(vote => vote.category === category)
         if (categoryVotes.length > 0) {
-          const sum = categoryVotes.reduce((acc, vote) => acc + vote, 0)
+          const sum = categoryVotes.reduce((acc, vote) => acc + vote.rating, 0)
           result[category] = sum / categoryVotes.length
         }
       })
@@ -248,7 +277,7 @@ export default {
       const categories = ['safety', 'happiness', 'satisfaction']
       
       categories.forEach(category => {
-        result[category] = (votes.value[category] || []).length
+        result[category] = allVotes.value.filter(vote => vote.category === category).length
       })
       
       return result
@@ -288,30 +317,29 @@ export default {
     }
 
     // Voting functions
-    const submitVote = (category, rating) => {
-      // Initialize votes structure if needed
-      if (!votes.value[category]) {
-        votes.value[category] = []
+    const submitVote = async (category, rating) => {
+      try {
+        // Remove previous vote from this user for this category
+        const existingVote = allVotes.value.find(vote => 
+          vote.userId === userId.value && vote.category === category
+        )
+        
+        if (existingVote) {
+          await votesStore.remove(existingVote.id)
+        }
+        
+        // Add new vote
+        await votesStore.add({
+          userId: userId.value,
+          category: category,
+          rating: rating
+        })
+        
+        // Update user votes for UI
+        userVotes.value[category] = rating
+      } catch (error) {
+        console.error('Error submitting vote:', error)
       }
-      
-      // Remove previous vote from this user for this category
-      const existingVoteIndex = votes.value[category].findIndex(vote => vote.userId === userId.value)
-      if (existingVoteIndex !== -1) {
-        votes.value[category].splice(existingVoteIndex, 1)
-      }
-      
-      // Add new vote
-      votes.value[category].push({
-        userId: userId.value,
-        rating: rating,
-        timestamp: new Date()
-      })
-      
-      // Update user votes for UI
-      userVotes.value[category] = rating
-      
-      // Force reactivity update
-      votes.value = { ...votes.value }
     }
 
     // Image functions
@@ -331,21 +359,38 @@ export default {
     }
 
     // Ticket functions
-    const addTicketAtPosition = (event) => {
+    const addTicketAtPosition = async (event) => {
       const rect = event.currentTarget.getBoundingClientRect()
       const x = event.clientX - rect.left - 50 // Center the ticket
       const y = event.clientY - rect.top - 25
       
-      tickets.value.push({
-        id: Date.now(),
-        content: '',
-        x: Math.max(0, x),
-        y: Math.max(0, y)
-      })
+      try {
+        await ticketsStore.add({
+          content: '',
+          x: Math.max(0, x),
+          y: Math.max(0, y)
+        })
+      } catch (error) {
+        console.error('Error adding ticket:', error)
+      }
     }
 
-    const removeTicket = (id) => {
-      tickets.value = tickets.value.filter(ticket => ticket.id !== id)
+    const removeTicket = async (id) => {
+      try {
+        await ticketsStore.remove(id)
+      } catch (error) {
+        console.error('Error removing ticket:', error)
+      }
+    }
+
+    const updateTicketContent = async (ticket) => {
+      try {
+        await ticketsStore.update(ticket.id, {
+          content: ticket.content
+        })
+      } catch (error) {
+        console.error('Error updating ticket content:', error)
+      }
     }
 
     // Drag functions
@@ -370,26 +415,44 @@ export default {
       }
     }
 
-    const stopDrag = () => {
+    const stopDrag = async () => {
+      if (dragState.value.isDragging && dragState.value.ticket) {
+        try {
+          // Save the new position to Firebase
+          await ticketsStore.update(dragState.value.ticket.id, {
+            x: dragState.value.ticket.x,
+            y: dragState.value.ticket.y
+          })
+        } catch (error) {
+          console.error('Error updating ticket position:', error)
+        }
+      }
+      
       dragState.value.isDragging = false
       document.removeEventListener('mousemove', handleDrag)
       document.removeEventListener('mouseup', stopDrag)
     }
 
     // Action functions
-    const addAction = () => {
+    const addAction = async () => {
       if (newAction.value.trim()) {
-        actions.value.push({
-          id: Date.now(),
-          content: newAction.value.trim(),
-          timestamp: new Date()
-        })
-        newAction.value = ''
+        try {
+          await actionsStore.add({
+            content: newAction.value.trim()
+          })
+          newAction.value = ''
+        } catch (error) {
+          console.error('Error adding action:', error)
+        }
       }
     }
 
-    const removeAction = (id) => {
-      actions.value = actions.value.filter(action => action.id !== id)
+    const removeAction = async (id) => {
+      try {
+        await actionsStore.remove(id)
+      } catch (error) {
+        console.error('Error removing action:', error)
+      }
     }
 
     // Cleanup on unmount
@@ -401,10 +464,28 @@ export default {
       document.removeEventListener('mouseup', stopDrag)
     })
 
-    // Initialize template image if no background is set
-    onMounted(() => {
-      if (!backgroundImage.value) {
-        useTemplateImage()
+    // Initialize Firebase listeners and template image
+    onMounted(async () => {
+      try {
+        console.log('Starting Retrospectives Firebase listeners...')
+        
+        // Start Firebase listeners
+        ticketsStore.startListening('timestamp')
+        actionsStore.startListening('timestamp')
+        votesStore.startListening('timestamp')
+        settingsStore.startListening()
+        
+        console.log('Firebase listeners started successfully')
+        
+        // Initialize template image if no background is set
+        setTimeout(() => {
+          if (!backgroundImage.value) {
+            console.log('Setting template image...')
+            useTemplateImage()
+          }
+        }, 1000) // Wait for Firebase to load
+      } catch (error) {
+        console.error('Error initializing Retrospectives:', error)
       }
     })
 
@@ -414,13 +495,18 @@ export default {
       tickets,
       actions,
       backgroundImage,
-      votes,
+      allVotes,
       userVotes,
       timerMinutes,
       timeRemaining,
       timerRunning,
       newAction,
       userId,
+      // Stores for loading states
+      ticketsStore,
+      actionsStore,
+      votesStore,
+      settingsStore,
       
       // Computed
       averages,
@@ -435,6 +521,7 @@ export default {
       useTemplateImage,
       addTicketAtPosition,
       removeTicket,
+      updateTicketContent,
       startDrag,
       addAction,
       removeAction
